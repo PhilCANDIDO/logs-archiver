@@ -22,10 +22,14 @@ The parameters are :
 - `--help or -h`: Display the helpline of script
 - `--no-log`: Display only std output
 - `--verbose`: Display all messages in verbosity.
+- `--dry-run`: Simulate operations without making any changes (preview mode)
 - `--src-path`: Source root path of logs files (mandatory)
 - `--src-pattern`: Pattern of the logs source folders and file. Use YYYY for Year, MM for month, DD for day. (mandatory)
 - `--dst-path`: Destination path of the archive (mandatory)
 - `--retention`: Number in day, to keep logs from the `--src-path` (default 5 days)
+  - 0 = archive all files
+  - 1 = archive files from yesterday and older (≥24 hours old)
+  - N = archive files older than N-1 days
 - `--log-path` : Log file of script execution (default: current script location)
 - `--log-retention`: Number in day, to keep script log files (default 5 days)
 - `--compress-level`: Compression level of archive

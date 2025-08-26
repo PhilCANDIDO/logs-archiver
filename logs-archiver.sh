@@ -2,7 +2,7 @@
 
 #############################################################################
 # Script Name: logs-archiver.sh
-# Version: 1.1.0
+# Version: 1.3.0
 # Author: System Administrator
 # Support: admin@example.com
 # Description: Archive and compress log files from source to destination
@@ -10,6 +10,8 @@
 #############################################################################
 
 # Changelog:
+# v1.3.0 - Added --dry-run mode to simulate operations without making changes
+# v1.2.0 - Fixed retention logic: retention=1 now correctly archives yesterday's files
 # v1.1.0 - Added log retention feature to clean up old script logs
 # v1.0.0 - Initial version with compression and retention management
 
@@ -20,6 +22,7 @@ RETENTION_DAYS=5
 LOG_RETENTION_DAYS=5
 VERBOSE=false
 NO_LOG=false
+DRY_RUN=false
 COMPRESS_LEVEL=9
 LOG_PATH=""
 START_TIME=$(date +%s)
@@ -54,10 +57,14 @@ OPTIONS:
     -h, --help              Display this help message
     --no-log               Display only standard output (no log file)
     --verbose              Enable verbose output
+    --dry-run              Simulate operations without making changes
     --src-path PATH        Source root path of log files (REQUIRED)
     --src-pattern PATTERN  Pattern with {YYYY}, {MM}, {DD} placeholders (REQUIRED)
     --dst-path PATH        Destination path for archives (REQUIRED)
     --retention DAYS       Days to keep logs in source (default: 5)
+                          0 = archive all files
+                          1 = archive files from yesterday and older
+                          N = archive files older than N-1 days
     --log-path PATH        Log file location (default: script directory)
     --log-retention DAYS   Days to keep script log files (default: 5)
     --compress-level N     Compression level 1-9 (default: 9)
@@ -202,16 +209,30 @@ archive_file() {
     local dst_file="$DST_PATH/$rel_path.bz2"
     local dst_dir=$(dirname "$dst_file")
     
+    # Get source file size
+    local size_before=$(get_file_size "$src_file")
+    TOTAL_SIZE_BEFORE=$((TOTAL_SIZE_BEFORE + size_before))
+    
+    if [[ "$DRY_RUN" == "true" ]]; then
+        # Dry run mode - just simulate
+        log_message DEBUG "[DRY-RUN] Would compress: $src_file -> $dst_file"
+        
+        # Estimate compressed size (rough estimate: 10% of original for logs)
+        local estimated_size_after=$((size_before / 10))
+        TOTAL_SIZE_AFTER=$((TOTAL_SIZE_AFTER + estimated_size_after))
+        
+        local ratio=90  # Estimated compression ratio
+        log_message SUCCESS "[DRY-RUN] Would archive: $rel_path (~${ratio}% compression)"
+        FILES_PROCESSED=$((FILES_PROCESSED + 1))
+        return 0
+    fi
+    
     # Create destination directory
     if ! mkdir -p "$dst_dir" 2>/dev/null; then
         log_message ERROR "Failed to create directory: $dst_dir"
         FILES_FAILED=$((FILES_FAILED + 1))
         return 1
     fi
-    
-    # Get source file size
-    local size_before=$(get_file_size "$src_file")
-    TOTAL_SIZE_BEFORE=$((TOTAL_SIZE_BEFORE + size_before))
     
     # Compress file
     local temp_file="${dst_file}.tmp"
@@ -253,13 +274,31 @@ cleanup_old_files() {
     local deleted_count=0
     local delete_failed=0
     
+    # Determine mtime parameter for deletion (same logic as archiving)
+    local mtime_param=""
+    if [[ $RETENTION_DAYS -eq 0 ]]; then
+        mtime_param=""
+    elif [[ $RETENTION_DAYS -eq 1 ]]; then
+        mtime_param="-mtime +0"
+    else
+        mtime_param="-mtime +$((RETENTION_DAYS - 1))"
+    fi
+    
     # Find and delete files older than retention period
     while IFS= read -r -d '' file; do
         # Only delete if the file was successfully archived
         local rel_path="${file#$SRC_PATH/}"
         local archived_file="$DST_PATH/$rel_path.bz2"
         
-        if [[ -f "$archived_file" ]]; then
+        if [[ "$DRY_RUN" == "true" ]]; then
+            # Dry run mode - just simulate
+            if [[ -f "$archived_file" ]] || [[ "$DRY_RUN" == "true" ]]; then
+                log_message DEBUG "[DRY-RUN] Would delete: $file"
+                deleted_count=$((deleted_count + 1))
+            else
+                log_message WARNING "[DRY-RUN] Would skip deletion (not archived): $file"
+            fi
+        elif [[ -f "$archived_file" ]]; then
             if rm "$file" 2>/dev/null; then
                 log_message DEBUG "Deleted: $file"
                 deleted_count=$((deleted_count + 1))
@@ -270,7 +309,7 @@ cleanup_old_files() {
         else
             log_message WARNING "Skipping deletion (not archived): $file"
         fi
-    done < <(find "$SRC_PATH" -type f -name "*.log" -mtime +${RETENTION_DAYS} -print0 2>/dev/null)
+    done < <(find "$SRC_PATH" -type f -name "*.log" $mtime_param -print0 2>/dev/null)
     
     log_message INFO "Deleted $deleted_count files, $delete_failed failures"
     
@@ -283,15 +322,28 @@ cleanup_empty_directories() {
     log_message INFO "Cleaning up empty directories"
     
     local dir_count=0
-    # Find and delete empty directories (bottom-up)
-    while IFS= read -r dir; do
-        if [[ "$dir" != "$SRC_PATH" ]]; then  # Don't delete the source root
-            dir_count=$((dir_count + 1))
-            log_message DEBUG "Removed empty directory: $dir"
-        fi
-    done < <(find "$SRC_PATH" -depth -type d -empty -delete -print 2>/dev/null)
     
-    log_message INFO "Removed $dir_count empty directories"
+    if [[ "$DRY_RUN" == "true" ]]; then
+        # Dry run mode - just count empty directories
+        while IFS= read -r dir; do
+            if [[ "$dir" != "$SRC_PATH" ]]; then  # Don't delete the source root
+                dir_count=$((dir_count + 1))
+                log_message DEBUG "[DRY-RUN] Would remove empty directory: $dir"
+            fi
+        done < <(find "$SRC_PATH" -depth -type d -empty -print 2>/dev/null)
+        
+        log_message INFO "[DRY-RUN] Would remove $dir_count empty directories"
+    else
+        # Find and delete empty directories (bottom-up)
+        while IFS= read -r dir; do
+            if [[ "$dir" != "$SRC_PATH" ]]; then  # Don't delete the source root
+                dir_count=$((dir_count + 1))
+                log_message DEBUG "Removed empty directory: $dir"
+            fi
+        done < <(find "$SRC_PATH" -depth -type d -empty -delete -print 2>/dev/null)
+        
+        log_message INFO "Removed $dir_count empty directories"
+    fi
 }
 
 # Function to clean up old script log files
@@ -309,7 +361,10 @@ cleanup_old_logs() {
     # Find and delete old log files
     while IFS= read -r old_log; do
         if [[ "$old_log" != "$LOG_PATH" ]]; then  # Don't delete the current log file
-            if rm "$old_log" 2>/dev/null; then
+            if [[ "$DRY_RUN" == "true" ]]; then
+                deleted_count=$((deleted_count + 1))
+                log_message DEBUG "[DRY-RUN] Would delete old log: $(basename "$old_log")"
+            elif rm "$old_log" 2>/dev/null; then
                 deleted_count=$((deleted_count + 1))
                 log_message DEBUG "Deleted old log: $(basename "$old_log")"
             fi
@@ -317,7 +372,11 @@ cleanup_old_logs() {
     done < <(find "$log_dir" -maxdepth 1 -name "$log_basename" -type f -mtime +${LOG_RETENTION_DAYS} -print 2>/dev/null)
     
     if [[ $deleted_count -gt 0 ]]; then
-        log_message INFO "Deleted $deleted_count old script log files"
+        if [[ "$DRY_RUN" == "true" ]]; then
+            log_message INFO "[DRY-RUN] Would delete $deleted_count old script log files"
+        else
+            log_message INFO "Deleted $deleted_count old script log files"
+        fi
     fi
 }
 
@@ -340,7 +399,11 @@ print_summary() {
     local end_time=$(date +%s)
     local duration=$((end_time - START_TIME))
     
-    log_message INFO "========== Archive Summary =========="
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log_message INFO "========== DRY-RUN SUMMARY =========="
+    else
+        log_message INFO "========== Archive Summary =========="
+    fi
     log_message INFO "Parameters:"
     log_message INFO "  Source Path: $SRC_PATH"
     log_message INFO "  Source Pattern: $SRC_PATTERN"
@@ -364,7 +427,11 @@ print_summary() {
 
 # Main function
 main() {
-    log_message INFO "Starting logs-archiver v1.1.0"
+    log_message INFO "Starting logs-archiver v1.3.0"
+    
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log_message INFO "*** DRY-RUN MODE - No changes will be made ***"
+    fi
     
     # Check prerequisites
     check_prerequisites
@@ -382,11 +449,25 @@ main() {
     find_pattern="${find_pattern//\{DD\}/*}"
     
     # Build find command
+    # Note: When RETENTION_DAYS=1, we want files from yesterday and older
+    # So we use -mtime with the value directly (not +N)
+    local mtime_param=""
+    if [[ $RETENTION_DAYS -eq 0 ]]; then
+        # Archive all files
+        mtime_param=""
+    elif [[ $RETENTION_DAYS -eq 1 ]]; then
+        # Archive files from yesterday and older (≥1 day old)
+        mtime_param="-mtime +0"
+    else
+        # Archive files older than N days
+        mtime_param="-mtime +$((RETENTION_DAYS - 1))"
+    fi
+    
     local file_count=0
     while IFS= read -r -d '' file; do
         archive_file "$file"
         file_count=$((file_count + 1))
-    done < <(find "$SRC_PATH" -type f -path "$SRC_PATH/$find_pattern" -mtime +${RETENTION_DAYS} -print0 2>/dev/null)
+    done < <(find "$SRC_PATH" -type f -path "$SRC_PATH/$find_pattern" $mtime_param -print0 2>/dev/null)
     
     if [[ $file_count -eq 0 ]]; then
         log_message INFO "No files found older than $RETENTION_DAYS days"
@@ -419,6 +500,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --verbose)
             VERBOSE=true
+            shift
+            ;;
+        --dry-run)
+            DRY_RUN=true
             shift
             ;;
         --src-path)
