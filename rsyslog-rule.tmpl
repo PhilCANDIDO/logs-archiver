@@ -2,7 +2,7 @@
 # Hostname: {{ DeviceHostname }}
 if ($fromhost-ip == '{{ DeviceIp }}') then {
     set $!matched = "yes";
-    action(type="omfile" dynaFile="{{TemplateName}}")
+    action(type="omfile" dynaFile="{{TemplateName}}" template="FormatWithDevIP")
     stop
 }
 ## End rule {{ DeviceIp }}

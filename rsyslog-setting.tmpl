@@ -2,4 +2,9 @@
 ## DO NOT REMOVE COMMENTS
 # Templating : YYYY/MM/DD/Device.log
 template(name="{{TemplateName}}" type="string" string="{{DstLogs}}/%$YEAR%/%$MONTH%/%$DAY%/%HOSTNAME%.log")
+
+# Adding devip value to message
+template(name="FormatWithDevIP" type="string" string="devip=%fromhost-ip% %msg%\n")
+
+# Catch-all template
 template(name="Unknown{{TemplateName}}" type="string" string="{{DstLogs}}/%$YEAR%/%$MONTH%/%$DAY%/unknown.log")
