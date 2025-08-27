@@ -1,4 +1,6 @@
 # Catch-all
-if (!$!matched) and ($inputname == 'imudp' or $inputname == 'imtcp') then {
+if ($inputname == 'imudp' or $inputname == 'imtcp') and \
+{{IpExclusions}} \
+   then {
     action(type="omfile" dynaFile="Unknown{{TemplateName}}" template="FormatWithDevIP")
 }

@@ -2,7 +2,7 @@
 
 #############################################################################
 # Script Name: syslog-settings.sh
-# Version: 1.1.1
+# Version: 1.2.0
 # Author: Philippe CANDIDO (philippe.candido@emerging-it.fr)
 # Support: support@emerging-it.fr
 # Description: Manage rsyslog configuration for remote device logging
@@ -10,6 +10,7 @@
 #############################################################################
 
 # Changelog:
+# v1.2.0 - Changed catch-all to use explicit IP exclusions instead of $!matched variable
 # v1.1.1 - Fixed rsyslog template syntax error with newline character (use %LF%)
 # v1.1.0 - Added support for catch-all template to capture unmatched messages
 # v1.0.0 - Initial version with add, delete, and create actions
@@ -189,6 +190,32 @@ backup_file() {
     fi
 }
 
+# Function to generate IP exclusion conditions
+generate_ip_exclusions() {
+    local file=$1
+    local exclusions=""
+    local ip_list=($(collect_configured_ips "$file"))
+    
+    if [[ ${#ip_list[@]} -eq 0 ]]; then
+        # No IPs configured, catch all
+        exclusions="   1"
+    else
+        # Build exclusion conditions
+        local first=true
+        for ip in "${ip_list[@]}"; do
+            if [[ "$first" == "true" ]]; then
+                exclusions="   not (\$fromhost-ip == '$ip')"
+                first=false
+            else
+                exclusions="$exclusions and \\
+   not (\$fromhost-ip == '$ip')"
+            fi
+        done
+    fi
+    
+    echo "$exclusions"
+}
+
 # Function to load template
 load_template() {
     local template_file=$1
@@ -213,6 +240,12 @@ load_template() {
     content="${content//\{\{ ScriptName \}\}/syslog-settings.sh}"
     # Also support Unknown template name for catch-all
     content="${content//Unknown\{\{TemplateName\}\}/Unknown$TEMPLATE_NAME}"
+    
+    # Handle IP exclusions for catch-all template
+    if [[ -n "${SYSLOG_FILE_PATH:-}" ]] && [[ "$template_file" == *"catchall"* ]]; then
+        local exclusions=$(generate_ip_exclusions "$SYSLOG_FILE_PATH")
+        content="${content//\{\{IpExclusions\}\}/$exclusions}"
+    fi
     
     echo "$content"
 }
@@ -263,6 +296,27 @@ extract_catchall_section() {
     else
         echo ""
     fi
+}
+
+# Function to collect all configured IPs from file
+collect_configured_ips() {
+    local file=$1
+    local ips=()
+    
+    if [[ ! -f "$file" ]]; then
+        echo ""
+        return
+    fi
+    
+    # Extract all IPs from rule comments
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^#\ Rule\ ([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})$ ]]; then
+            ips+=("${BASH_REMATCH[1]}")
+        fi
+    done < "$file"
+    
+    # Return IPs as array
+    printf '%s\n' "${ips[@]}"
 }
 
 # Function to remove catch-all section from content
@@ -376,15 +430,27 @@ action_add() {
             # Load new rule from template
             local rule_content=$(load_template "$SCRIPT_DIR/rsyslog-rule.tmpl")
             
+            # Remove the old catch-all section first
+            remove_catchall_section "$SYSLOG_FILE_PATH"
+            
             # Insert new rule at the same position
             local before_rule=$(head -n $((start_line - 1)) "$SYSLOG_FILE_PATH")
-            local after_rule=$(tail -n +$((end_line + 1)) "$SYSLOG_FILE_PATH")
+            local after_rule=$(tail -n +$((end_line + 1)) "$SYSLOG_FILE_PATH" | sed '/^# Catch-all/,$d')
             
             {
                 echo "$before_rule"
                 echo "$rule_content"
                 echo "$after_rule"
             } > "$SYSLOG_FILE_PATH"
+            
+            # Regenerate catch-all section (IPs remain the same for updates)
+            if [[ -n "$catchall_section" ]] || [[ -f "$SCRIPT_DIR/rsyslog-catchall.tmpl" ]]; then
+                local new_catchall=$(load_template "$SCRIPT_DIR/rsyslog-catchall.tmpl" 2>/dev/null || echo "")
+                if [[ -n "$new_catchall" ]]; then
+                    echo "" >> "$SYSLOG_FILE_PATH"
+                    echo "$new_catchall" >> "$SYSLOG_FILE_PATH"
+                fi
+            fi
             
             log_message SUCCESS "Updated rule for $DEVICE_IP (hostname: $DEVICE_HOSTNAME)"
         fi
@@ -406,10 +472,13 @@ action_add() {
             echo "" >> "$SYSLOG_FILE_PATH"
             echo "$rule_content" >> "$SYSLOG_FILE_PATH"
             
-            # Re-add catch-all section if it existed
-            if [[ -n "$catchall_section" ]]; then
-                echo "" >> "$SYSLOG_FILE_PATH"
-                echo "$catchall_section" >> "$SYSLOG_FILE_PATH"
+            # Regenerate catch-all section with updated IP exclusions
+            if [[ -n "$catchall_section" ]] || [[ -f "$SCRIPT_DIR/rsyslog-catchall.tmpl" ]]; then
+                local new_catchall=$(load_template "$SCRIPT_DIR/rsyslog-catchall.tmpl" 2>/dev/null || echo "")
+                if [[ -n "$new_catchall" ]]; then
+                    echo "" >> "$SYSLOG_FILE_PATH"
+                    echo "$new_catchall" >> "$SYSLOG_FILE_PATH"
+                fi
             fi
             
             log_message SUCCESS "Added rule for $DEVICE_IP (hostname: $DEVICE_HOSTNAME)"
@@ -438,6 +507,9 @@ action_delete() {
     
     backup_file "$SYSLOG_FILE_PATH"
     
+    # Check if catch-all exists
+    local catchall_section=$(extract_catchall_section "$SYSLOG_FILE_PATH")
+    
     if [[ "$DRY_RUN" == "true" ]]; then
         log_message INFO "[DRY-RUN] Would delete rule at lines $start_line-$end_line"
         sed -n "${start_line},${end_line}p" "$SYSLOG_FILE_PATH"
@@ -447,6 +519,19 @@ action_delete() {
         
         # Clean up extra blank lines
         sed -i '/^$/N;/^\n$/d' "$SYSLOG_FILE_PATH"
+        
+        # Regenerate catch-all section with updated IP exclusions
+        if [[ -n "$catchall_section" ]] || [[ -f "$SCRIPT_DIR/rsyslog-catchall.tmpl" ]]; then
+            # Remove old catch-all
+            remove_catchall_section "$SYSLOG_FILE_PATH"
+            
+            # Generate new catch-all with updated IP list
+            local new_catchall=$(load_template "$SCRIPT_DIR/rsyslog-catchall.tmpl" 2>/dev/null || echo "")
+            if [[ -n "$new_catchall" ]]; then
+                echo "" >> "$SYSLOG_FILE_PATH"
+                echo "$new_catchall" >> "$SYSLOG_FILE_PATH"
+            fi
+        fi
         
         log_message SUCCESS "Deleted rule for $DEVICE_IP"
     fi
@@ -478,7 +563,7 @@ restart_rsyslog() {
 
 # Main function
 main() {
-    log_message INFO "Starting syslog-settings v1.1.1"
+    log_message INFO "Starting syslog-settings v1.2.0"
     
     if [[ "$DRY_RUN" == "true" ]]; then
         log_message INFO "*** DRY-RUN MODE - No changes will be made ***"
