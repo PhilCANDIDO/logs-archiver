@@ -26,6 +26,7 @@ NO_LOG=false
 DRY_RUN=false
 COMPRESS_LEVEL=9
 LOG_PATH=""
+CRON_SCHEDULE=""
 START_TIME=$(date +%s)
 
 # Variables to track statistics
@@ -69,6 +70,8 @@ OPTIONS:
     --log-path PATH        Log file location (default: script directory)
     --log-retention DAYS   Days to keep script log files (default: 5)
     --compress-level N     Compression level 1-9 (default: 9)
+    --cron-schedule TYPE   Create/update cron job (hourly, daily, weekly)
+                          Creates cron file in /etc/cron.d/
 
 EXAMPLE:
     $0 --src-path /var/syslog \\
@@ -567,6 +570,18 @@ while [[ $# -gt 0 ]]; do
             COMPRESS_LEVEL="$2"
             if [[ ! "$COMPRESS_LEVEL" =~ ^[1-9]$ ]]; then
                 echo "Error: Compression level must be between 1 and 9"
+                exit 1
+            fi
+            shift 2
+            ;;
+        --cron-schedule)
+            if [[ -z "${2:-}" ]]; then
+                echo "Error: --cron-schedule requires an argument"
+                exit 1
+            fi
+            CRON_SCHEDULE="$2"
+            if [[ ! "$CRON_SCHEDULE" =~ ^(hourly|daily|weekly)$ ]]; then
+                echo "Error: Cron schedule must be hourly, daily, or weekly"
                 exit 1
             fi
             shift 2
