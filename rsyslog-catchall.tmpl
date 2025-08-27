@@ -1,0 +1,4 @@
+# Catch-all
+if (!$!matched) and ($inputname == 'imudp' or $inputname == 'imtcp') then {
+    action(type="omfile" dynaFile="Unknown{{TemplateName}}")
+}

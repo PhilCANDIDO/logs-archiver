@@ -2,7 +2,7 @@
 
 #############################################################################
 # Script Name: syslog-settings.sh
-# Version: 1.0.0
+# Version: 1.1.0
 # Author: Philippe CANDIDO (philippe.candido@emerging-it.fr)
 # Support: support@emerging-it.fr
 # Description: Manage rsyslog configuration for remote device logging
@@ -10,6 +10,7 @@
 #############################################################################
 
 # Changelog:
+# v1.1.0 - Added support for catch-all template to capture unmatched messages
 # v1.0.0 - Initial version with add, delete, and create actions
 
 set -euo pipefail
@@ -209,6 +210,8 @@ load_template() {
     content="${content//\{\{ DeviceIp \}\}/$DEVICE_IP}"
     content="${content//\{\{ DeviceHostname \}\}/$DEVICE_HOSTNAME}"
     content="${content//\{\{ ScriptName \}\}/syslog-settings.sh}"
+    # Also support Unknown template name for catch-all
+    content="${content//Unknown\{\{TemplateName\}\}/Unknown$TEMPLATE_NAME}"
     
     echo "$content"
 }
@@ -243,6 +246,43 @@ find_rule_section() {
     echo "${start_line}:${end_line}"
 }
 
+# Function to extract catch-all section from file
+extract_catchall_section() {
+    local file=$1
+    
+    if [[ ! -f "$file" ]]; then
+        echo ""
+        return
+    fi
+    
+    # Look for catch-all section
+    if grep -q "^# Catch-all" "$file" 2>/dev/null; then
+        # Extract everything from "# Catch-all" to the end of file
+        sed -n '/^# Catch-all/,$p' "$file"
+    else
+        echo ""
+    fi
+}
+
+# Function to remove catch-all section from content
+remove_catchall_section() {
+    local file=$1
+    
+    if [[ ! -f "$file" ]]; then
+        return
+    fi
+    
+    # Remove catch-all section if present
+    if grep -q "^# Catch-all" "$file" 2>/dev/null; then
+        local catchall_line=$(grep -n "^# Catch-all" "$file" | head -1 | cut -d: -f1)
+        if [[ -n "$catchall_line" ]] && [[ "$catchall_line" -gt 0 ]]; then
+            sed -i "1,$((catchall_line - 1))!d" "$file"
+            # Clean up trailing empty lines
+            sed -i -e :a -e '/^\s*$/d;N;ba' "$file"
+        fi
+    fi
+}
+
 # Function to create new rsyslog configuration
 action_create() {
     log_message INFO "Creating new rsyslog configuration: $SYSLOG_FILE"
@@ -264,10 +304,23 @@ action_create() {
     # Load rule template  
     local rule_content=$(load_template "$SCRIPT_DIR/rsyslog-rule.tmpl")
     
+    # Load catch-all template if it exists
+    local catchall_content=""
+    if [[ -f "$SCRIPT_DIR/rsyslog-catchall.tmpl" ]]; then
+        catchall_content=$(load_template "$SCRIPT_DIR/rsyslog-catchall.tmpl")
+    fi
+    
     # Combine templates
     local full_content="${base_content}
 
 ${rule_content}"
+    
+    # Add catch-all at the end if available
+    if [[ -n "$catchall_content" ]]; then
+        full_content="${full_content}
+
+${catchall_content}"
+    fi
     
     if [[ "$DRY_RUN" == "true" ]]; then
         log_message INFO "[DRY-RUN] Would create file: $SYSLOG_FILE_PATH"
@@ -299,6 +352,9 @@ action_add() {
         log_message INFO "Use --action create to create a new configuration file"
         exit 1
     fi
+    
+    # Extract catch-all section before modifications
+    local catchall_section=$(extract_catchall_section "$SYSLOG_FILE_PATH")
     
     # Find existing rule
     local rule_location=$(find_rule_section "$DEVICE_IP" "$SYSLOG_FILE_PATH")
@@ -342,9 +398,18 @@ action_add() {
             log_message INFO "[DRY-RUN] Would add new rule:"
             echo "$rule_content"
         else
+            # First, remove catch-all section temporarily
+            remove_catchall_section "$SYSLOG_FILE_PATH"
+            
             # Append rule to file
             echo "" >> "$SYSLOG_FILE_PATH"
             echo "$rule_content" >> "$SYSLOG_FILE_PATH"
+            
+            # Re-add catch-all section if it existed
+            if [[ -n "$catchall_section" ]]; then
+                echo "" >> "$SYSLOG_FILE_PATH"
+                echo "$catchall_section" >> "$SYSLOG_FILE_PATH"
+            fi
             
             log_message SUCCESS "Added rule for $DEVICE_IP (hostname: $DEVICE_HOSTNAME)"
         fi
@@ -412,7 +477,7 @@ restart_rsyslog() {
 
 # Main function
 main() {
-    log_message INFO "Starting syslog-settings v1.0.0"
+    log_message INFO "Starting syslog-settings v1.1.0"
     
     if [[ "$DRY_RUN" == "true" ]]; then
         log_message INFO "*** DRY-RUN MODE - No changes will be made ***"
