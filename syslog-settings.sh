@@ -386,27 +386,27 @@ action_delete() {
     fi
 }
 
-# Function to reload rsyslog service
-reload_rsyslog() {
+# Function to restart rsyslog service
+restart_rsyslog() {
     if [[ "$DRY_RUN" == "true" ]]; then
-        log_message INFO "[DRY-RUN] Would reload rsyslog service"
+        log_message INFO "[DRY-RUN] Would restart rsyslog service"
         return
     fi
     
     if command -v systemctl &> /dev/null; then
-        if systemctl reload rsyslog &>/dev/null; then
-            log_message SUCCESS "Rsyslog service reloaded"
+        if systemctl restart rsyslog &>/dev/null; then
+            log_message SUCCESS "Rsyslog service restarted"
         else
-            log_message WARNING "Failed to reload rsyslog service"
+            log_message WARNING "Failed to restart rsyslog service"
         fi
     elif command -v service &> /dev/null; then
-        if service rsyslog reload &>/dev/null; then
-            log_message SUCCESS "Rsyslog service reloaded"
+        if service rsyslog restart &>/dev/null; then
+            log_message SUCCESS "Rsyslog service restarted"
         else
-            log_message WARNING "Failed to reload rsyslog service"
+            log_message WARNING "Failed to restart rsyslog service"
         fi
     else
-        log_message WARNING "Could not reload rsyslog service - please reload manually"
+        log_message WARNING "Could not restart rsyslog service - please restart manually"
     fi
 }
 
@@ -436,7 +436,7 @@ main() {
     
     # Reload rsyslog if not in dry-run mode
     if [[ "$DRY_RUN" != "true" ]]; then
-        reload_rsyslog
+        restart_rsyslog
     fi
     
     log_message INFO "Operation completed"
