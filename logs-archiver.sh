@@ -2,14 +2,15 @@
 
 #############################################################################
 # Script Name: logs-archiver.sh
-# Version: 1.3.0
+# Version: 1.3.1
 # Author: System Administrator
 # Support: admin@example.com
 # Description: Archive and compress log files from source to destination
-# Date: 2025-08-26
+# Date: 2025-08-27
 #############################################################################
 
 # Changelog:
+# v1.3.1 - Fixed trailing slash issue in paths that prevented file matching
 # v1.3.0 - Added --dry-run mode to simulate operations without making changes
 # v1.2.0 - Fixed retention logic: retention=1 now correctly archives yesterday's files
 # v1.1.0 - Added log retention feature to clean up old script logs
@@ -157,6 +158,10 @@ validate_parameters() {
         echo "Use --help for usage information"
         exit 1
     fi
+    
+    # Normalize paths - remove trailing slashes
+    SRC_PATH="${SRC_PATH%/}"
+    DST_PATH="${DST_PATH%/}"
     
     # Create destination if it doesn't exist
     if [[ ! -d "$DST_PATH" ]]; then
@@ -427,7 +432,7 @@ print_summary() {
 
 # Main function
 main() {
-    log_message INFO "Starting logs-archiver v1.3.0"
+    log_message INFO "Starting logs-archiver v1.3.1"
     
     if [[ "$DRY_RUN" == "true" ]]; then
         log_message INFO "*** DRY-RUN MODE - No changes will be made ***"
