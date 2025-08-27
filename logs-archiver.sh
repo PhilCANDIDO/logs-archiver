@@ -2,7 +2,7 @@
 
 #############################################################################
 # Script Name: logs-archiver.sh
-# Version: 1.4.1
+# Version: 1.4.2
 # Author: System Administrator
 # Support: admin@example.com
 # Description: Archive and compress log files from source to destination
@@ -10,6 +10,7 @@
 #############################################################################
 
 # Changelog:
+# v1.4.2 - Fixed destination path to preserve full source path structure
 # v1.4.1 - Fixed cron generation to exclude --log-path for proper log rotation
 # v1.4.0 - Added --cron-schedule for automatic scheduling (hourly/daily/weekly)
 # v1.3.1 - Fixed trailing slash issue in paths that prevented file matching
@@ -214,9 +215,11 @@ archive_file() {
     local src_file="$1"
     local src_base="$SRC_PATH"
     
-    # Calculate relative path
+    # Preserve full source path structure in destination
+    # Remove leading slash from src_base for proper path construction
+    local src_path_clean="${src_base#/}"
     local rel_path="${src_file#$src_base/}"
-    local dst_file="$DST_PATH/$rel_path.bz2"
+    local dst_file="$DST_PATH/${src_path_clean}/$rel_path.bz2"
     local dst_dir=$(dirname "$dst_file")
     
     # Get source file size
@@ -297,8 +300,9 @@ cleanup_old_files() {
     # Find and delete files older than retention period
     while IFS= read -r -d '' file; do
         # Only delete if the file was successfully archived
+        local src_path_clean="${SRC_PATH#/}"
         local rel_path="${file#$SRC_PATH/}"
-        local archived_file="$DST_PATH/$rel_path.bz2"
+        local archived_file="$DST_PATH/${src_path_clean}/$rel_path.bz2"
         
         if [[ "$DRY_RUN" == "true" ]]; then
             # Dry run mode - just simulate
@@ -523,7 +527,7 @@ print_summary() {
 
 # Main function
 main() {
-    log_message INFO "Starting logs-archiver v1.4.1"
+    log_message INFO "Starting logs-archiver v1.4.2"
     
     if [[ "$DRY_RUN" == "true" ]]; then
         log_message INFO "*** DRY-RUN MODE - No changes will be made ***"
