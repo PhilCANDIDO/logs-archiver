@@ -2,7 +2,7 @@
 
 #############################################################################
 # Script Name: syslog-settings.sh
-# Version: 1.3.1
+# Version: 1.3.2
 # Author: Philippe CANDIDO (philippe.candido@emerging-it.fr)
 # Support: support@emerging-it.fr
 # Description: Manage rsyslog configuration for remote device logging
@@ -10,6 +10,7 @@
 #############################################################################
 
 # Changelog:
+# v1.3.2 - Fixed rule detection to properly find indented rules in ruleset mode
 # v1.3.1 - Fixed add and delete actions to properly maintain ruleset structure
 # v1.3.0 - Added support for rsyslog ruleset structure with --use-ruleset option
 # v1.2.1 - Fixed catch-all generation during create action to properly exclude the first IP
@@ -279,20 +280,21 @@ find_rule_section() {
         return
     fi
     
-    # Find rule start and end lines
+    # Find rule start and end lines (handle both regular and indented rules)
     while IFS= read -r line_info; do
         if [[ "$line_info" =~ ^([0-9]+):(.*)$ ]]; then
             local line_num="${BASH_REMATCH[1]}"
             local line_content="${BASH_REMATCH[2]}"
             
-            if [[ "$line_content" =~ ^#\ Rule\ ${ip}$ ]]; then
+            # Match both "# Rule" and "  # Rule" (with spaces)
+            if [[ "$line_content" =~ ^[[:space:]]*#\ Rule\ ${ip}$ ]]; then
                 start_line=$line_num
-            elif [[ "$line_content" =~ ^##\ End\ rule\ ${ip}$ ]] && [[ $start_line -gt 0 ]]; then
+            elif [[ "$line_content" =~ ^[[:space:]]*##\ End\ rule\ ${ip}$ ]] && [[ $start_line -gt 0 ]]; then
                 end_line=$line_num
                 break
             fi
         fi
-    done < <(grep -n "^#.*${ip}" "$file" 2>/dev/null || true)
+    done < <(grep -n "# Rule ${ip}\|## End rule ${ip}" "$file" 2>/dev/null || true)
     
     echo "${start_line}:${end_line}"
 }
@@ -325,9 +327,9 @@ collect_configured_ips() {
         return
     fi
     
-    # Extract all IPs from rule comments
+    # Extract all IPs from rule comments (handle both regular and indented)
     while IFS= read -r line; do
-        if [[ "$line" =~ ^#\ Rule\ ([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})$ ]]; then
+        if [[ "$line" =~ ^[[:space:]]*#\ Rule\ ([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})$ ]]; then
             ips+=("${BASH_REMATCH[1]}")
         fi
     done < "$file"
@@ -506,11 +508,16 @@ action_add() {
             # Load new rule from template
             local rule_content=$(load_template "$SCRIPT_DIR/rsyslog-rule.tmpl")
             
-            # Remove the old rule
-            sed -i "${start_line},${end_line}d" "$SYSLOG_FILE_PATH"
+            # Save content before and after the rule
+            local before_content=$(head -n $((start_line - 1)) "$SYSLOG_FILE_PATH")
+            local after_content=$(tail -n +$((end_line + 1)) "$SYSLOG_FILE_PATH")
             
-            # Insert new rule at the same position
-            sed -i "${start_line}i\\${rule_content//$/\\$}" "$SYSLOG_FILE_PATH"
+            # Rebuild the file with the updated rule
+            {
+                echo "$before_content"
+                echo "$rule_content"
+                echo "$after_content"
+            } > "$SYSLOG_FILE_PATH"
             
             # Re-add catch-all and closing brace if using ruleset
             if [[ "$USE_RULESET" == "true" ]]; then
@@ -683,7 +690,7 @@ restart_rsyslog() {
 
 # Main function
 main() {
-    log_message INFO "Starting syslog-settings v1.3.1"
+    log_message INFO "Starting syslog-settings v1.3.2"
     
     if [[ "$DRY_RUN" == "true" ]]; then
         log_message INFO "*** DRY-RUN MODE - No changes will be made ***"
