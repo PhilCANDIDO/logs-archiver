@@ -2,7 +2,7 @@
 
 #############################################################################
 # Script Name: syslog-settings.sh
-# Version: 1.1.0
+# Version: 1.1.1
 # Author: Philippe CANDIDO (philippe.candido@emerging-it.fr)
 # Support: support@emerging-it.fr
 # Description: Manage rsyslog configuration for remote device logging
@@ -10,6 +10,7 @@
 #############################################################################
 
 # Changelog:
+# v1.1.1 - Fixed rsyslog template syntax error with newline character (use %LF%)
 # v1.1.0 - Added support for catch-all template to capture unmatched messages
 # v1.0.0 - Initial version with add, delete, and create actions
 
@@ -477,7 +478,7 @@ restart_rsyslog() {
 
 # Main function
 main() {
-    log_message INFO "Starting syslog-settings v1.1.0"
+    log_message INFO "Starting syslog-settings v1.1.1"
     
     if [[ "$DRY_RUN" == "true" ]]; then
         log_message INFO "*** DRY-RUN MODE - No changes will be made ***"
