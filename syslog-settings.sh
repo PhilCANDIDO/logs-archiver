@@ -2,7 +2,7 @@
 
 #############################################################################
 # Script Name: syslog-settings.sh
-# Version: 1.2.0
+# Version: 1.3.0
 # Author: Philippe CANDIDO (philippe.candido@emerging-it.fr)
 # Support: support@emerging-it.fr
 # Description: Manage rsyslog configuration for remote device logging
@@ -10,6 +10,8 @@
 #############################################################################
 
 # Changelog:
+# v1.3.0 - Added support for rsyslog ruleset structure with --use-ruleset option
+# v1.2.1 - Fixed catch-all generation during create action to properly exclude the first IP
 # v1.2.0 - Changed catch-all to use explicit IP exclusions instead of $!matched variable
 # v1.1.1 - Fixed rsyslog template syntax error with newline character (use %LF%)
 # v1.1.0 - Added support for catch-all template to capture unmatched messages
@@ -25,6 +27,8 @@ ACTION="add"
 DEVICE_HOSTNAME=""
 RSYSLOG_DIR="/etc/rsyslog.d"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+USE_RULESET=false
+INPUT_FILE="10-rsyslog-inputs.conf"
 
 # Colors for output (only if terminal supports it)
 if [[ -t 1 ]]; then
@@ -54,6 +58,8 @@ OPTIONS:
     --verbose              Enable verbose output  
     --dry-run              Simulate operations without making changes
     --syslog-file FILE     Rsyslog setting file to manage (REQUIRED)
+    --input-file FILE      Rsyslog input file (default: 10-rsyslog-inputs.conf)
+    --use-ruleset          Use rsyslog ruleset structure (recommended)
     --template-name NAME   Template name in rsyslog file (REQUIRED)
     --dst-logs PATH        Destination path for logs (REQUIRED)
     --device-ip IP         IP address of the device (REQUIRED)
@@ -66,18 +72,19 @@ ACTIONS:
     create  - Create new rsyslog configuration file
 
 EXAMPLES:
-    # Add a new device
-    $0 --syslog-file 20-firewalls.conf --template-name FirewallLogTemplate \\
+    # Create new configuration with ruleset (recommended)
+    $0 --syslog-file 20-rsyslog-rules.conf --template-name FirewallLogTemplate \\
        --dst-logs /var/syslog/firewalls --device-ip 10.0.1.1 \\
-       --device-hostname firewall01
+       --use-ruleset --action create
+
+    # Add a new device
+    $0 --syslog-file 20-rsyslog-rules.conf --template-name FirewallLogTemplate \\
+       --dst-logs /var/syslog/firewalls --device-ip 10.0.1.2 \\
+       --device-hostname firewall02 --use-ruleset
 
     # Delete a device
-    $0 --syslog-file 20-firewalls.conf --template-name FirewallLogTemplate \\
-       --dst-logs /var/syslog/firewalls --device-ip 10.0.1.1 --action delete
-
-    # Create new configuration
-    $0 --syslog-file 30-switches.conf --template-name SwitchLogTemplate \\
-       --dst-logs /var/syslog/switches --device-ip 10.0.2.1 --action create
+    $0 --syslog-file 20-rsyslog-rules.conf --template-name FirewallLogTemplate \\
+       --dst-logs /var/syslog/firewalls --device-ip 10.0.1.1 --use-ruleset --action delete
 
 EOF
 }
@@ -193,16 +200,25 @@ backup_file() {
 # Function to generate IP exclusion conditions
 generate_ip_exclusions() {
     local file=$1
+    local additional_ip="${2:-}"
     local exclusions=""
     local ip_list=($(collect_configured_ips "$file"))
     
-    if [[ ${#ip_list[@]} -eq 0 ]]; then
+    # Add additional IP if provided (for create action)
+    if [[ -n "$additional_ip" ]]; then
+        ip_list+=("$additional_ip")
+    fi
+    
+    # Remove duplicates
+    local unique_ips=($(printf '%s\n' "${ip_list[@]}" | sort -u))
+    
+    if [[ ${#unique_ips[@]} -eq 0 ]]; then
         # No IPs configured, catch all
         exclusions="   1"
     else
         # Build exclusion conditions
         local first=true
-        for ip in "${ip_list[@]}"; do
+        for ip in "${unique_ips[@]}"; do
             if [[ "$first" == "true" ]]; then
                 exclusions="   not (\$fromhost-ip == '$ip')"
                 first=false
@@ -241,9 +257,9 @@ load_template() {
     # Also support Unknown template name for catch-all
     content="${content//Unknown\{\{TemplateName\}\}/Unknown$TEMPLATE_NAME}"
     
-    # Handle IP exclusions for catch-all template
-    if [[ -n "${SYSLOG_FILE_PATH:-}" ]] && [[ "$template_file" == *"catchall"* ]]; then
-        local exclusions=$(generate_ip_exclusions "$SYSLOG_FILE_PATH")
+    # Handle IP exclusions for catch-all template (only in legacy mode)
+    if [[ "$USE_RULESET" != "true" ]] && [[ -n "${SYSLOG_FILE_PATH:-}" ]] && [[ "$template_file" == *"catchall-legacy"* ]]; then
+        local exclusions=$(generate_ip_exclusions "$SYSLOG_FILE_PATH" "${DEVICE_IP:-}")
         content="${content//\{\{IpExclusions\}\}/$exclusions}"
     fi
     
@@ -342,6 +358,25 @@ remove_catchall_section() {
 action_create() {
     log_message INFO "Creating new rsyslog configuration: $SYSLOG_FILE"
     
+    # Create input file if using ruleset and it doesn't exist
+    if [[ "$USE_RULESET" == "true" ]]; then
+        local input_file_path="$RSYSLOG_DIR/$INPUT_FILE"
+        if [[ ! -f "$input_file_path" ]] || [[ "$DRY_RUN" == "true" ]]; then
+            log_message INFO "Creating rsyslog input file: $INPUT_FILE"
+            if [[ "$DRY_RUN" != "true" ]]; then
+                if [[ -f "$SCRIPT_DIR/rsyslog-inputs.tmpl" ]]; then
+                    cp "$SCRIPT_DIR/rsyslog-inputs.tmpl" "$input_file_path"
+                    chmod 644 "$input_file_path"
+                    log_message SUCCESS "Created input configuration file: $input_file_path"
+                else
+                    log_message WARNING "Input template not found: rsyslog-inputs.tmpl"
+                fi
+            else
+                log_message INFO "[DRY-RUN] Would create input file: $input_file_path"
+            fi
+        fi
+    fi
+    
     if [[ -f "$SYSLOG_FILE_PATH" ]] && [[ "$DRY_RUN" != "true" ]]; then
         log_message WARNING "File already exists: $SYSLOG_FILE_PATH"
         read -p "Overwrite? (y/N): " -n 1 -r
@@ -365,16 +400,31 @@ action_create() {
         catchall_content=$(load_template "$SCRIPT_DIR/rsyslog-catchall.tmpl")
     fi
     
-    # Combine templates
-    local full_content="${base_content}
+    # Build content based on mode
+    local full_content=""
+    if [[ "$USE_RULESET" == "true" ]]; then
+        # Ruleset mode - simple catch-all
+        full_content="${base_content}
+
+ruleset(name=\"rsyslog\") {
+${rule_content}
+${catchall_content}
+}"
+    else
+        # Legacy mode - needs IP exclusions in catch-all
+        # Load legacy catch-all template if needed
+        if [[ -f "$SCRIPT_DIR/rsyslog-catchall-legacy.tmpl" ]]; then
+            catchall_content=$(load_template "$SCRIPT_DIR/rsyslog-catchall-legacy.tmpl")
+        fi
+        
+        full_content="${base_content}
 
 ${rule_content}"
-    
-    # Add catch-all at the end if available
-    if [[ -n "$catchall_content" ]]; then
-        full_content="${full_content}
+        if [[ -n "$catchall_content" ]]; then
+            full_content="${full_content}
 
 ${catchall_content}"
+        fi
     fi
     
     if [[ "$DRY_RUN" == "true" ]]; then
@@ -443,9 +493,13 @@ action_add() {
                 echo "$after_rule"
             } > "$SYSLOG_FILE_PATH"
             
-            # Regenerate catch-all section (IPs remain the same for updates)
+            # Regenerate catch-all section (IP already in list for updates)
             if [[ -n "$catchall_section" ]] || [[ -f "$SCRIPT_DIR/rsyslog-catchall.tmpl" ]]; then
+                # Don't pass DEVICE_IP since it's already in the file
+                local temp_ip="$DEVICE_IP"
+                DEVICE_IP=""
                 local new_catchall=$(load_template "$SCRIPT_DIR/rsyslog-catchall.tmpl" 2>/dev/null || echo "")
+                DEVICE_IP="$temp_ip"
                 if [[ -n "$new_catchall" ]]; then
                     echo "" >> "$SYSLOG_FILE_PATH"
                     echo "$new_catchall" >> "$SYSLOG_FILE_PATH"
@@ -525,8 +579,11 @@ action_delete() {
             # Remove old catch-all
             remove_catchall_section "$SYSLOG_FILE_PATH"
             
-            # Generate new catch-all with updated IP list
+            # Generate new catch-all with updated IP list (deleted IP already removed from file)
+            local temp_ip="$DEVICE_IP"
+            DEVICE_IP=""
             local new_catchall=$(load_template "$SCRIPT_DIR/rsyslog-catchall.tmpl" 2>/dev/null || echo "")
+            DEVICE_IP="$temp_ip"
             if [[ -n "$new_catchall" ]]; then
                 echo "" >> "$SYSLOG_FILE_PATH"
                 echo "$new_catchall" >> "$SYSLOG_FILE_PATH"
@@ -563,7 +620,7 @@ restart_rsyslog() {
 
 # Main function
 main() {
-    log_message INFO "Starting syslog-settings v1.2.0"
+    log_message INFO "Starting syslog-settings v1.3.0"
     
     if [[ "$DRY_RUN" == "true" ]]; then
         log_message INFO "*** DRY-RUN MODE - No changes will be made ***"
@@ -658,6 +715,18 @@ while [[ $# -gt 0 ]]; do
                 exit 1
             fi
             ACTION="$2"
+            shift 2
+            ;;
+        --use-ruleset)
+            USE_RULESET=true
+            shift
+            ;;
+        --input-file)
+            if [[ -z "${2:-}" ]]; then
+                echo "Error: --input-file requires an argument"
+                exit 1
+            fi
+            INPUT_FILE="$2"
             shift 2
             ;;
         *)

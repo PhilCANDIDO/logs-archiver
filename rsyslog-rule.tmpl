@@ -1,7 +1,7 @@
-# Rule {{ DeviceIp }}
-# Hostname: {{ DeviceHostname }}
-if ($fromhost-ip == '{{ DeviceIp }}') then {
-    action(type="omfile" dynaFile="{{TemplateName}}")
-    stop
-}
-## End rule {{ DeviceIp }}
+  # Rule {{ DeviceIp }}
+  # Hostname: {{ DeviceHostname }}
+  if ($fromhost-ip == '{{ DeviceIp }}') then {
+     action(type="omfile" dynaFile="{{TemplateName}}")
+     stop
+  }
+  ## End rule {{ DeviceIp }}

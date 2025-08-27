@@ -1,0 +1,6 @@
+module(load="imudp")
+module(load="imtcp")
+
+# Link network inputs to ruleset "rsyslog"
+input(type="imudp" port="514" ruleset="rsyslog")
+input(type="imtcp" port="514" ruleset="rsyslog")

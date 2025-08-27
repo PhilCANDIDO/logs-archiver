@@ -1,0 +1,6 @@
+# Catch-all
+if ($inputname == 'imudp' or $inputname == 'imtcp') and \
+{{IpExclusions}} \
+   then {
+    action(type="omfile" dynaFile="Unknown{{TemplateName}}" template="FormatWithDevIP")
+}
