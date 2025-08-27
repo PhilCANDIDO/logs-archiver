@@ -2,7 +2,7 @@
 
 #############################################################################
 # Script Name: logs-archiver.sh
-# Version: 1.3.1
+# Version: 1.4.0
 # Author: System Administrator
 # Support: admin@example.com
 # Description: Archive and compress log files from source to destination
@@ -10,6 +10,7 @@
 #############################################################################
 
 # Changelog:
+# v1.4.0 - Added --cron-schedule for automatic scheduling (hourly/daily/weekly)
 # v1.3.1 - Fixed trailing slash issue in paths that prevented file matching
 # v1.3.0 - Added --dry-run mode to simulate operations without making changes
 # v1.2.0 - Fixed retention logic: retention=1 now correctly archives yesterday's files
@@ -388,6 +389,94 @@ cleanup_old_logs() {
     fi
 }
 
+# Function to setup cron schedule
+setup_cron() {
+    if [[ -z "$CRON_SCHEDULE" ]]; then
+        return  # No cron setup requested
+    fi
+    
+    # Skip cron setup in dry-run mode
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log_message INFO "[DRY-RUN] Would create cron job: $CRON_SCHEDULE"
+        return
+    fi
+    
+    # Check if running as root (required for /etc/cron.d)
+    if [[ $EUID -ne 0 ]]; then
+        log_message ERROR "Cron setup requires root privileges. Run with sudo."
+        exit 1
+    fi
+    
+    # Get the absolute path of the script
+    local script_path=$(readlink -f "${BASH_SOURCE[0]}")
+    local script_dir=$(dirname "$script_path")
+    local script_name=$(basename "$script_path")
+    
+    # Generate cron file name based on source path
+    local cron_name="logs-archiver-$(echo "$SRC_PATH" | tr '/' '-' | sed 's/^-//' | sed 's/-$//')"
+    local cron_file="/etc/cron.d/$cron_name"
+    
+    # Determine cron schedule pattern
+    local cron_pattern=""
+    case "$CRON_SCHEDULE" in
+        hourly)
+            cron_pattern="0 * * * *"  # Every hour at minute 0
+            ;;
+        daily)
+            cron_pattern="0 2 * * *"   # Daily at 2:00 AM
+            ;;
+        weekly)
+            cron_pattern="0 2 * * 0"   # Weekly on Sunday at 2:00 AM
+            ;;
+    esac
+    
+    # Build the command line with all parameters (except cron-schedule itself and dry-run)
+    local cron_cmd="bash $script_path"
+    cron_cmd="$cron_cmd --src-path \"$SRC_PATH\""
+    cron_cmd="$cron_cmd --src-pattern \"$SRC_PATTERN\""
+    cron_cmd="$cron_cmd --dst-path \"$DST_PATH\""
+    cron_cmd="$cron_cmd --retention $RETENTION_DAYS"
+    
+    if [[ "$LOG_RETENTION_DAYS" != "5" ]]; then
+        cron_cmd="$cron_cmd --log-retention $LOG_RETENTION_DAYS"
+    fi
+    
+    if [[ "$COMPRESS_LEVEL" != "9" ]]; then
+        cron_cmd="$cron_cmd --compress-level $COMPRESS_LEVEL"
+    fi
+    
+    if [[ -n "$LOG_PATH" ]]; then
+        cron_cmd="$cron_cmd --log-path \"$LOG_PATH\""
+    fi
+    
+    # Create cron file
+    log_message INFO "Creating cron job: $cron_file"
+    cat > "$cron_file" << EOF
+# Cron job for logs-archiver
+# Generated: $(date)
+# Schedule: $CRON_SCHEDULE
+# Source: $SRC_PATH
+# Pattern: $SRC_PATTERN
+# Destination: $DST_PATH
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+$cron_pattern root $cron_cmd >> /var/log/logs-archiver-cron.log 2>&1
+EOF
+    
+    # Set proper permissions for cron file
+    chmod 644 "$cron_file"
+    
+    log_message SUCCESS "Cron job created: $cron_file ($CRON_SCHEDULE)"
+    log_message INFO "Cron will run: $cron_pattern"
+    
+    # Reload cron service if systemctl is available
+    if command -v systemctl &> /dev/null; then
+        systemctl reload cron 2>/dev/null || systemctl reload crond 2>/dev/null || true
+    fi
+}
+
 # Function to format bytes to human readable
 format_bytes() {
     local bytes=$1
@@ -435,7 +524,7 @@ print_summary() {
 
 # Main function
 main() {
-    log_message INFO "Starting logs-archiver v1.3.1"
+    log_message INFO "Starting logs-archiver v1.4.0"
     
     if [[ "$DRY_RUN" == "true" ]]; then
         log_message INFO "*** DRY-RUN MODE - No changes will be made ***"
@@ -491,6 +580,9 @@ main() {
     
     # Clean up old script log files
     cleanup_old_logs
+    
+    # Setup cron schedule if requested
+    setup_cron
     
     log_message INFO "Archive process completed"
 }
