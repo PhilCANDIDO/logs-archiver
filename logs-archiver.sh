@@ -2,7 +2,7 @@
 
 #############################################################################
 # Script Name: logs-archiver.sh
-# Version: 1.4.2
+# Version: 1.4.3
 # Author: Philippe CANDIDO (philippe.candido@emerging-it.fr)
 # Support: support@emerging-it.fr
 # Description: Archive and compress log files from source to destination
@@ -10,6 +10,7 @@
 #############################################################################
 
 # Changelog:
+# v1.4.3 - Fixed cron filename to use underscores (hyphens not allowed in /etc/cron.d)
 # v1.4.2 - Fixed destination path to preserve full source path structure
 # v1.4.1 - Fixed cron generation to exclude --log-path for proper log rotation
 # v1.4.0 - Added --cron-schedule for automatic scheduling (hourly/daily/weekly)
@@ -417,8 +418,8 @@ setup_cron() {
     local script_dir=$(dirname "$script_path")
     local script_name=$(basename "$script_path")
     
-    # Generate cron file name based on source path
-    local cron_name="logs-archiver-$(echo "$SRC_PATH" | tr '/' '-' | sed 's/^-//' | sed 's/-$//')"
+    # Generate cron file name based on source path (using underscores as hyphens are not allowed in /etc/cron.d)
+    local cron_name="logs_archiver_$(echo "$SRC_PATH" | tr '/' '_' | sed 's/^_//' | sed 's/_$//')"
     local cron_file="/etc/cron.d/$cron_name"
     
     # Determine cron schedule pattern
