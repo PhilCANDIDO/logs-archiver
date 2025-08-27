@@ -2,7 +2,7 @@
 
 #############################################################################
 # Script Name: syslog-settings.sh
-# Version: 1.3.0
+# Version: 1.3.1
 # Author: Philippe CANDIDO (philippe.candido@emerging-it.fr)
 # Support: support@emerging-it.fr
 # Description: Manage rsyslog configuration for remote device logging
@@ -10,6 +10,7 @@
 #############################################################################
 
 # Changelog:
+# v1.3.1 - Fixed add and delete actions to properly maintain ruleset structure
 # v1.3.0 - Added support for rsyslog ruleset structure with --use-ruleset option
 # v1.2.1 - Fixed catch-all generation during create action to properly exclude the first IP
 # v1.2.0 - Changed catch-all to use explicit IP exclusions instead of $!matched variable
@@ -344,13 +345,35 @@ remove_catchall_section() {
     fi
     
     # Remove catch-all section if present
-    if grep -q "^# Catch-all" "$file" 2>/dev/null; then
-        local catchall_line=$(grep -n "^# Catch-all" "$file" | head -1 | cut -d: -f1)
+    if grep -q "^# Catch-all\|^  # Catch-all" "$file" 2>/dev/null; then
+        local catchall_line=$(grep -n "^# Catch-all\|^  # Catch-all" "$file" | head -1 | cut -d: -f1)
         if [[ -n "$catchall_line" ]] && [[ "$catchall_line" -gt 0 ]]; then
-            sed -i "1,$((catchall_line - 1))!d" "$file"
-            # Clean up trailing empty lines
-            sed -i -e :a -e '/^\s*$/d;N;ba' "$file"
+            # For ruleset mode, don't remove the closing brace
+            if grep -q "^ruleset(" "$file" 2>/dev/null; then
+                sed -i "${catchall_line},\$d" "$file"
+                # Keep everything before catch-all but remove trailing empty lines
+                sed -i '/^[[:space:]]*$/d' "$file"
+            else
+                sed -i "1,$((catchall_line - 1))!d" "$file"
+                # Clean up trailing empty lines
+                sed -i -e :a -e '/^\s*$/d;N;ba' "$file"
+            fi
         fi
+    fi
+}
+
+# Function to detect if file uses ruleset structure
+file_uses_ruleset() {
+    local file=$1
+    
+    if [[ ! -f "$file" ]]; then
+        return 1
+    fi
+    
+    if grep -q "^ruleset(name=\"rsyslog\")" "$file" 2>/dev/null; then
+        return 0
+    else
+        return 1
     fi
 }
 
@@ -458,6 +481,12 @@ action_add() {
         exit 1
     fi
     
+    # Check if we should use ruleset mode based on file content or parameter
+    local file_has_ruleset=$(file_uses_ruleset "$SYSLOG_FILE_PATH" && echo "true" || echo "false")
+    if [[ "$file_has_ruleset" == "true" ]] || [[ "$USE_RULESET" == "true" ]]; then
+        USE_RULESET=true
+    fi
+    
     # Extract catch-all section before modifications
     local catchall_section=$(extract_catchall_section "$SYSLOG_FILE_PATH")
     
@@ -474,35 +503,38 @@ action_add() {
         if [[ "$DRY_RUN" == "true" ]]; then
             log_message INFO "[DRY-RUN] Would update rule at lines $start_line-$end_line"
         else
-            # Create new content without the old rule
-            local new_content=$(sed "${start_line},${end_line}d" "$SYSLOG_FILE_PATH")
-            
             # Load new rule from template
             local rule_content=$(load_template "$SCRIPT_DIR/rsyslog-rule.tmpl")
             
-            # Remove the old catch-all section first
-            remove_catchall_section "$SYSLOG_FILE_PATH"
+            # Remove the old rule
+            sed -i "${start_line},${end_line}d" "$SYSLOG_FILE_PATH"
             
             # Insert new rule at the same position
-            local before_rule=$(head -n $((start_line - 1)) "$SYSLOG_FILE_PATH")
-            local after_rule=$(tail -n +$((end_line + 1)) "$SYSLOG_FILE_PATH" | sed '/^# Catch-all/,$d')
+            sed -i "${start_line}i\\${rule_content//$/\\$}" "$SYSLOG_FILE_PATH"
             
-            {
-                echo "$before_rule"
-                echo "$rule_content"
-                echo "$after_rule"
-            } > "$SYSLOG_FILE_PATH"
-            
-            # Regenerate catch-all section (IP already in list for updates)
-            if [[ -n "$catchall_section" ]] || [[ -f "$SCRIPT_DIR/rsyslog-catchall.tmpl" ]]; then
-                # Don't pass DEVICE_IP since it's already in the file
-                local temp_ip="$DEVICE_IP"
-                DEVICE_IP=""
-                local new_catchall=$(load_template "$SCRIPT_DIR/rsyslog-catchall.tmpl" 2>/dev/null || echo "")
-                DEVICE_IP="$temp_ip"
-                if [[ -n "$new_catchall" ]]; then
-                    echo "" >> "$SYSLOG_FILE_PATH"
-                    echo "$new_catchall" >> "$SYSLOG_FILE_PATH"
+            # Re-add catch-all and closing brace if using ruleset
+            if [[ "$USE_RULESET" == "true" ]]; then
+                # Make sure we have the catch-all and closing brace
+                if ! grep -q "^  # Catch-all" "$SYSLOG_FILE_PATH"; then
+                    local catchall_content=$(load_template "$SCRIPT_DIR/rsyslog-catchall.tmpl")
+                    # Remove any existing closing brace
+                    sed -i '/^}$/d' "$SYSLOG_FILE_PATH"
+                    # Add catch-all and closing brace
+                    echo "$catchall_content" >> "$SYSLOG_FILE_PATH"
+                    echo "}" >> "$SYSLOG_FILE_PATH"
+                fi
+            else
+                # Legacy mode - regenerate catch-all with IP exclusions
+                if [[ -n "$catchall_section" ]] || [[ -f "$SCRIPT_DIR/rsyslog-catchall-legacy.tmpl" ]]; then
+                    remove_catchall_section "$SYSLOG_FILE_PATH"
+                    local temp_ip="$DEVICE_IP"
+                    DEVICE_IP=""
+                    local new_catchall=$(load_template "$SCRIPT_DIR/rsyslog-catchall-legacy.tmpl" 2>/dev/null || echo "")
+                    DEVICE_IP="$temp_ip"
+                    if [[ -n "$new_catchall" ]]; then
+                        echo "" >> "$SYSLOG_FILE_PATH"
+                        echo "$new_catchall" >> "$SYSLOG_FILE_PATH"
+                    fi
                 fi
             fi
             
@@ -519,19 +551,32 @@ action_add() {
             log_message INFO "[DRY-RUN] Would add new rule:"
             echo "$rule_content"
         else
-            # First, remove catch-all section temporarily
-            remove_catchall_section "$SYSLOG_FILE_PATH"
-            
-            # Append rule to file
-            echo "" >> "$SYSLOG_FILE_PATH"
-            echo "$rule_content" >> "$SYSLOG_FILE_PATH"
-            
-            # Regenerate catch-all section with updated IP exclusions
-            if [[ -n "$catchall_section" ]] || [[ -f "$SCRIPT_DIR/rsyslog-catchall.tmpl" ]]; then
-                local new_catchall=$(load_template "$SCRIPT_DIR/rsyslog-catchall.tmpl" 2>/dev/null || echo "")
-                if [[ -n "$new_catchall" ]]; then
-                    echo "" >> "$SYSLOG_FILE_PATH"
-                    echo "$new_catchall" >> "$SYSLOG_FILE_PATH"
+            if [[ "$USE_RULESET" == "true" ]]; then
+                # Ruleset mode - add rule before catch-all and closing brace
+                # Remove catch-all and closing brace temporarily
+                sed -i '/^  # Catch-all/,/^}$/d' "$SYSLOG_FILE_PATH"
+                
+                # Add the new rule
+                echo "$rule_content" >> "$SYSLOG_FILE_PATH"
+                
+                # Re-add catch-all and closing brace
+                local catchall_content=$(load_template "$SCRIPT_DIR/rsyslog-catchall.tmpl")
+                echo "$catchall_content" >> "$SYSLOG_FILE_PATH"
+                echo "}" >> "$SYSLOG_FILE_PATH"
+            else
+                # Legacy mode - add rule and regenerate catch-all with IP exclusions
+                remove_catchall_section "$SYSLOG_FILE_PATH"
+                
+                echo "" >> "$SYSLOG_FILE_PATH"
+                echo "$rule_content" >> "$SYSLOG_FILE_PATH"
+                
+                # Regenerate catch-all with updated IP exclusions
+                if [[ -f "$SCRIPT_DIR/rsyslog-catchall-legacy.tmpl" ]]; then
+                    local new_catchall=$(load_template "$SCRIPT_DIR/rsyslog-catchall-legacy.tmpl")
+                    if [[ -n "$new_catchall" ]]; then
+                        echo "" >> "$SYSLOG_FILE_PATH"
+                        echo "$new_catchall" >> "$SYSLOG_FILE_PATH"
+                    fi
                 fi
             fi
             
@@ -548,6 +593,12 @@ action_delete() {
     if [[ ! -f "$SYSLOG_FILE_PATH" ]]; then
         log_message ERROR "Configuration file not found: $SYSLOG_FILE_PATH"
         exit 1
+    fi
+    
+    # Check if we should use ruleset mode based on file content
+    local file_has_ruleset=$(file_uses_ruleset "$SYSLOG_FILE_PATH" && echo "true" || echo "false")
+    if [[ "$file_has_ruleset" == "true" ]] || [[ "$USE_RULESET" == "true" ]]; then
+        USE_RULESET=true
     fi
     
     # Find existing rule
@@ -574,19 +625,31 @@ action_delete() {
         # Clean up extra blank lines
         sed -i '/^$/N;/^\n$/d' "$SYSLOG_FILE_PATH"
         
-        # Regenerate catch-all section with updated IP exclusions
-        if [[ -n "$catchall_section" ]] || [[ -f "$SCRIPT_DIR/rsyslog-catchall.tmpl" ]]; then
-            # Remove old catch-all
-            remove_catchall_section "$SYSLOG_FILE_PATH"
-            
-            # Generate new catch-all with updated IP list (deleted IP already removed from file)
-            local temp_ip="$DEVICE_IP"
-            DEVICE_IP=""
-            local new_catchall=$(load_template "$SCRIPT_DIR/rsyslog-catchall.tmpl" 2>/dev/null || echo "")
-            DEVICE_IP="$temp_ip"
-            if [[ -n "$new_catchall" ]]; then
-                echo "" >> "$SYSLOG_FILE_PATH"
-                echo "$new_catchall" >> "$SYSLOG_FILE_PATH"
+        if [[ "$USE_RULESET" == "true" ]]; then
+            # Ruleset mode - ensure catch-all and closing brace are still present
+            if ! grep -q "^  # Catch-all" "$SYSLOG_FILE_PATH"; then
+                # Remove any existing closing brace
+                sed -i '/^}$/d' "$SYSLOG_FILE_PATH"
+                # Add catch-all and closing brace back
+                local catchall_content=$(load_template "$SCRIPT_DIR/rsyslog-catchall.tmpl")
+                echo "$catchall_content" >> "$SYSLOG_FILE_PATH"
+                echo "}" >> "$SYSLOG_FILE_PATH"
+            fi
+        else
+            # Legacy mode - regenerate catch-all with updated IP exclusions
+            if [[ -n "$catchall_section" ]] || [[ -f "$SCRIPT_DIR/rsyslog-catchall-legacy.tmpl" ]]; then
+                # Remove old catch-all
+                remove_catchall_section "$SYSLOG_FILE_PATH"
+                
+                # Generate new catch-all with updated IP list (deleted IP already removed from file)
+                local temp_ip="$DEVICE_IP"
+                DEVICE_IP=""
+                local new_catchall=$(load_template "$SCRIPT_DIR/rsyslog-catchall-legacy.tmpl" 2>/dev/null || echo "")
+                DEVICE_IP="$temp_ip"
+                if [[ -n "$new_catchall" ]]; then
+                    echo "" >> "$SYSLOG_FILE_PATH"
+                    echo "$new_catchall" >> "$SYSLOG_FILE_PATH"
+                fi
             fi
         fi
         
@@ -620,7 +683,7 @@ restart_rsyslog() {
 
 # Main function
 main() {
-    log_message INFO "Starting syslog-settings v1.3.0"
+    log_message INFO "Starting syslog-settings v1.3.1"
     
     if [[ "$DRY_RUN" == "true" ]]; then
         log_message INFO "*** DRY-RUN MODE - No changes will be made ***"
