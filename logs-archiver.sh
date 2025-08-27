@@ -2,7 +2,7 @@
 
 #############################################################################
 # Script Name: logs-archiver.sh
-# Version: 1.4.0
+# Version: 1.4.1
 # Author: System Administrator
 # Support: admin@example.com
 # Description: Archive and compress log files from source to destination
@@ -10,6 +10,7 @@
 #############################################################################
 
 # Changelog:
+# v1.4.1 - Fixed cron generation to exclude --log-path for proper log rotation
 # v1.4.0 - Added --cron-schedule for automatic scheduling (hourly/daily/weekly)
 # v1.3.1 - Fixed trailing slash issue in paths that prevented file matching
 # v1.3.0 - Added --dry-run mode to simulate operations without making changes
@@ -445,9 +446,7 @@ setup_cron() {
         cron_cmd="$cron_cmd --compress-level $COMPRESS_LEVEL"
     fi
     
-    if [[ -n "$LOG_PATH" ]]; then
-        cron_cmd="$cron_cmd --log-path \"$LOG_PATH\""
-    fi
+    # Note: We don't include --log-path in cron to allow each execution to create its own log file
     
     # Create cron file
     log_message INFO "Creating cron job: $cron_file"
@@ -524,7 +523,7 @@ print_summary() {
 
 # Main function
 main() {
-    log_message INFO "Starting logs-archiver v1.4.0"
+    log_message INFO "Starting logs-archiver v1.4.1"
     
     if [[ "$DRY_RUN" == "true" ]]; then
         log_message INFO "*** DRY-RUN MODE - No changes will be made ***"
