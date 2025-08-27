@@ -3,8 +3,8 @@
 #############################################################################
 # Script Name: logs-archiver.sh
 # Version: 1.4.2
-# Author: System Administrator
-# Support: admin@example.com
+# Author: Philippe CANDIDO (philippe.candido@emerging-it.fr)
+# Support: support@emerging-it.fr
 # Description: Archive and compress log files from source to destination
 # Date: 2025-08-27
 #############################################################################
